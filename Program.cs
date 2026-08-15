@@ -1,150 +1,108 @@
-using MvpProject;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 1. ПОДКЛЮЧАЕМ БАЗУ ДАННЫХ SQLite
+// Файл базы данных "tickets.db" создастся сам прямо в папке с проектом
+builder.Services.AddDbContext<AppDbContext>(options => 
+    options.UseSqlite("Data Source=tickets.db"));
+
 var app = builder.Build();
 
-// ==========================================
-// БАЗА ДАННЫХ (в памяти)
-// ==========================================
-
-// Пустой список для заявок
-var tickets = new List<Ticket>();
-
-// Список возможных проблем (для выпадающего списка)
-var problemOptions = new List<string>
+// Автоматически создаем базу данных при старте приложения, если её еще нет
+using (var scope = app.Services.CreateScope())
 {
-    "Не работает принтер",
-    "Не включается компьютер",
-    "Проблемы с Wi-Fi",
-    "Зависает программа",
-    "Не могу войти в систему",
-    "Нужна новая мышь",
-    "Сломался монитор",
-    "Другое (указать в комментарии)"
-};
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.EnsureCreated();
+}
 
-// ==========================================
-// ГЛАВНАЯ СТРАНИЦА (список заявок)
-// ==========================================
-
-app.MapGet("/", () =>
+// 2. СТРАНИЦА ПОЛЬЗОВАТЕЛЯ (Главная "/") - Форма отправки заявки
+app.MapGet("/", async (HttpContext context) =>
 {
-    var html = @"
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='utf-8' />
-        <title>Тикет-трекер</title>
-    </head>
-    <body>
-        <h1>Список заявок</h1>
-        <ul>";
-
-    // Если заявок нет, показываем сообщение
-    if (tickets.Count == 0)
-    {
-        html += "<li><em>Пока нет заявок. Создайте первую!</em></li>";
-    }
-    else
-    {
-        foreach (var ticket in tickets)
-        {
-            html += $@"
-            <li>
-                <strong>{ticket.Name} {ticket.SecondName}</strong><br/>
-                Проблема: {ticket.Problem}<br/>";
-
-            if (!string.IsNullOrEmpty(ticket.Comment))
-            {
-                html += $"Описание: {ticket.Comment}<br/>";
-            }
-
-            html += $"</li>";
-        }
-    }
-
-    html += @"
-        </ul>
-        <a href='/create'>➕ Создать заявку</a>
-    </body>
-    </html>";
-
-    return Results.Content(html, "text/html; charset=utf-8");
-});
-
-// ==========================================
-// ФОРМА СОЗДАНИЯ ЗАЯВКИ
-// ==========================================
-
-app.MapGet("/create", () =>
-{
-    // Генерируем HTML-код для выпадающего списка
-    var optionsHtml = "";
-    foreach (var problem in problemOptions)
-    {
-        optionsHtml += $"<option value='{problem}'>{problem}</option>";
-    }
-
-    var html = $@"
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset='utf-8' />
-        <title>Создать заявку</title>
-        <style>
-            body {{ font-family: Arial; margin: 20px; }}
-            label {{ display: inline-block; width: 150px; }}
-            input, select, textarea {{ margin-bottom: 10px; width: 300px; }}
-            textarea {{ height: 100px; }}
-            button {{ padding: 8px 20px; background: #4CAF50; color: white; border: none; cursor: pointer; }}
-        </style>
-    </head>
-    <body>
-        <h1>Создать заявку</h1>
-        <form method='post' action='/create'>
-            <label>Имя:</label> <input name='name' required/><br/>
-            <label>Фамилия:</label> <input name='secondName' required/><br/>
-            <label>Проблема:</label>
-            <select name='problem' required>
-                {optionsHtml}
-            </select><br/>
-            <label>Описание проблемы:</label>
-            <textarea name='comment' placeholder='Опишите подробно...'></textarea><br/>
-            <button type='submit'>Отправить</button>
+    context.Response.ContentType = "text/html; charset=utf-8";
+    await context.Response.WriteAsync(@"
+        <style>body { font-family: sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; line-height: 1.6; }</style>
+        <h2>Подать заявку сисадмину 🛠️</h2>
+        <form action='/send' method='POST'>
+            <label>Ваше имя:</label><br>
+            <input type='text' name='employee' required style='width:100%; margin-bottom:10px;'><br>
+            <label>Что сломалось:</label><br>
+            <textarea name='description' required style='width:100%; height:100px; margin-bottom:10px;'></textarea><br>
+            <button type='submit' style='padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer;'>Отправить</button>
         </form>
-        <br/>
-        <a href='/'>← На главную</a>
-    </body>
-    </html>";
-
-    return Results.Content(html, "text/html; charset=utf-8");
+    ");
 });
 
-// ==========================================
-// ОБРАБОТКА СОЗДАНИЯ ЗАЯВКИ
-// ==========================================
-
-app.MapPost("/create", (string name, string secondName, string problem, string comment) =>
+// ОБРАБОТЧИК ФОРМЫ (Прием данных из формы и запись в базу)
+app.MapPost("/send", async (HttpContext context, AppDbContext db) =>
 {
-    // Создаём новую заявку
-    var newTicket = new Ticket
+    var form = await context.Request.ReadFormAsync();
+    
+    var ticket = new Ticket
     {
-        Id = tickets.Count + 1,           // ID = следующий номер
-        Name = name,
-        SecondName = secondName,
-        Problem = problem,
-        Comment = comment ?? ""            // Если комментарий не заполнен — пустая строка
+        EmployeeName = form["employee"],
+        Description = form["description"]
     };
 
-    // Добавляем в список
-    tickets.Add(newTicket);
+    db.Tickets.Add(ticket);
+    await db.SaveChangesAsync();
 
-    // Перенаправляем на главную
-    return Results.Redirect("/");
+    context.Response.ContentType = "text/html; charset=utf-8";
+    await context.Response.WriteAsync("<h3>Заявка принята! Сисадмин уже идет. 🚀</h3><a href='/'>Назад</a>");
 });
 
-// ==========================================
-// ЗАПУСК ПРИЛОЖЕНИЯ
-// ==========================================
+// 3. СТРАНИЦА АДМИНА ("/admin") - Список активных заявок
+app.MapGet("/admin", async (HttpContext context, AppDbContext db) => 
+{
+    context.Response.ContentType = "text/html; charset=utf-8";
+    
+    // Берем из базы только открытые заявки
+    var activeTickets = await db.Tickets.Where(t => !t.IsClosed).ToListAsync();
+
+    var html = "<style>body { font-family: sans-serif; max-width: 600px; margin: 50px auto; } table { width:100%; border-collapse:collapse; } th, td { padding: 10px; border: 1px solid #ddd; text-align: left; }</style>";
+    html += "<h2>Активные заявки 🖥️</h2>";
+    html += "<table><tr><th>Кто</th><th>Проблема</th><th>Действие</th></tr>";
+
+    foreach (var ticket in activeTickets)
+    {
+        html += $"<tr>" +
+                $"<td>{ticket.EmployeeName}</td>" +
+                $"<td>{ticket.Description}</td>" +
+                $"<td><form action='/close/{ticket.Id}' method='POST'><button type='submit' style='background:red; color:white; border:none; padding:5px 10px; cursor:pointer;'>Выполнено</button></form></td>" +
+                $"</tr>";
+    }
+    html += "</table>";
+
+    if (!activeTickets.Any()) html += "<p>Все проблемы решены! Кофе-брейк ☕</p>";
+
+    await context.Response.WriteAsync(html);
+});
+
+// ОБРАБОТЧИК ЗАКРЫТИЯ ЗАЯВКИ АДМИНОМ
+app.MapPost("/close/{id:int}", async (int id, AppDbContext db, HttpContext context) =>
+{
+    var ticket = await db.Tickets.FindAsync(id);
+    if (ticket != null)
+    {
+        ticket.IsClosed = true; // Закрываем заявку
+        await db.SaveChangesAsync();
+    }
+    context.Response.Redirect("/admin"); // Перенаправляем обратно на панель админа
+});
 
 app.Run();
+
+// 4. ОПИСАНИЕ СТРУКТУРЫ ДАННЫХ И БАЗЫ
+public class Ticket
+{
+    public int Id { get; set; }
+    public string EmployeeName { get; set; } = "";
+    public string Description { get; set; } = "";
+    public bool IsClosed { get; set; } = false;
+}
+
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+    public DbSet<Ticket> Tickets => Set<Ticket>();
+}
